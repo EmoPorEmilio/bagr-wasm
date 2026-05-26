@@ -34,11 +34,11 @@ pub fn normalize(raw: &str) -> BagResult<String> {
 pub fn encode_for_manifest(path: &str) -> String {
     // bagit-python only escapes CR and LF; literal `%` is left alone.
     let mut out = String::with_capacity(path.len());
-    for b in path.bytes() {
-        match b {
-            b'\r' => out.push_str("%0D"),
-            b'\n' => out.push_str("%0A"),
-            _ => out.push(b as char),
+    for ch in path.chars() {
+        match ch {
+            '\r' => out.push_str("%0D"),
+            '\n' => out.push_str("%0A"),
+            _ => out.push(ch),
         }
     }
     out
@@ -110,6 +110,14 @@ mod tests {
         // bagit-python doesn't encode `%`, so we must round-trip a path
         // containing a literal percent without mangling it.
         let raw = "data/100%done.txt";
+        let enc = encode_for_manifest(raw);
+        assert_eq!(enc, raw);
+        assert_eq!(decode_from_manifest(&enc), raw);
+    }
+
+    #[test]
+    fn preserves_utf8_path_characters() {
+        let raw = "data/Gmail - Gracias por rellenar este formulario_ TALLER INTEGRADOR – Módulo_ Diseño de Interacción.pdf";
         let enc = encode_for_manifest(raw);
         assert_eq!(enc, raw);
         assert_eq!(decode_from_manifest(&enc), raw);
