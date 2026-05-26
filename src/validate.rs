@@ -58,6 +58,7 @@ pub async fn validate_with<S: BagSource + ?Sized>(
         return Err(BagError::Incomplete(format!("missing {}", spec::BAGIT_TXT)));
     }
     let declaration = BagItDeclaration::parse(&read_to_string(source, spec::BAGIT_TXT).await?)?;
+    let tag_encoding = declaration.encoding.clone();
 
     // -- find manifests --
     let mut payload_manifests = Vec::new();
@@ -82,7 +83,8 @@ pub async fn validate_with<S: BagSource + ?Sized>(
 
     // -- fetch.txt (optional) --
     let fetch = if listing.contains(spec::FETCH_TXT) {
-        let f = Fetch::parse(&read_to_string(source, spec::FETCH_TXT).await?)?;
+        let raw = read_to_bytes(source, spec::FETCH_TXT).await?;
+        let f = Fetch::parse(&decode_tag_bytes(&raw, &tag_encoding))?;
         for entry in &f.entries {
             crate::fetch::validate_url(&entry.url)?;
             if !entry.path.starts_with("data/") {
@@ -104,9 +106,10 @@ pub async fn validate_with<S: BagSource + ?Sized>(
         .collect();
 
     // Cache parsed bag-info.txt for Payload-Oxum lookup; both fast and full
-    // modes need it.
+    // modes need it. Decode using the encoding declared in bagit.txt.
     let bag_info = if listing.contains(spec::BAG_INFO_TXT) {
-        Some(BagInfo::parse(&read_to_string(source, spec::BAG_INFO_TXT).await?)?)
+        let raw = read_to_bytes(source, spec::BAG_INFO_TXT).await?;
+        Some(BagInfo::parse(&decode_tag_bytes(&raw, &tag_encoding))?)
     } else {
         None
     };
@@ -142,15 +145,17 @@ pub async fn validate_with<S: BagSource + ?Sized>(
         });
     }
 
-    // -- parse all manifests --
+    // -- parse all manifests (decoded per the declared tag-file encoding) --
     let mut parsed_payload: Vec<Manifest> = Vec::new();
     for name in &payload_manifests {
-        let text = read_to_string(source, name).await?;
+        let raw = read_to_bytes(source, name).await?;
+        let text = decode_tag_bytes(&raw, &tag_encoding);
         parsed_payload.push(Manifest::parse(name, &text)?);
     }
     let mut parsed_tag: Vec<Manifest> = Vec::new();
     for name in &tag_manifests {
-        let text = read_to_string(source, name).await?;
+        let raw = read_to_bytes(source, name).await?;
+        let text = decode_tag_bytes(&raw, &tag_encoding);
         parsed_tag.push(Manifest::parse(name, &text)?);
     }
 
@@ -331,10 +336,77 @@ fn is_manifest_file(name: &str, prefix: &str) -> bool {
 }
 
 async fn read_to_string<S: BagSource + ?Sized>(source: &S, path: &str) -> BagResult<String> {
+    let bytes = read_to_bytes(source, path).await?;
+    String::from_utf8(bytes).map_err(|e| BagError::Io(format!("{path}: not UTF-8 ({e})")))
+}
+
+async fn read_to_bytes<S: BagSource + ?Sized>(source: &S, path: &str) -> BagResult<Vec<u8>> {
     let mut reader = source.open(path).await?;
     let mut buf = Vec::new();
     while let Some(chunk) = reader.next_chunk().await? {
         buf.extend_from_slice(&chunk);
     }
-    String::from_utf8(buf).map_err(|e| BagError::Io(format!("{path}: not UTF-8 ({e})")))
+    Ok(buf)
+}
+
+/// Decode a tag-file's raw bytes according to the encoding declared in
+/// bagit.txt. We support UTF-8, ISO-8859-1 (= Latin-1, trivial byte-to-char),
+/// and UTF-16 (with or without BOM, big- or little-endian). Anything else
+/// falls back to lossy UTF-8 so the rest of validation can proceed; callers
+/// should already have rejected unknown encodings if they care.
+fn decode_tag_bytes(bytes: &[u8], encoding: &str) -> String {
+    let enc = encoding
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect::<String>();
+    match enc.as_str() {
+        "utf8" => String::from_utf8_lossy(bytes).into_owned(),
+        "iso88591" | "latin1" | "cp1252" | "windows1252" => {
+            // Latin-1: every byte maps directly to U+0000..U+00FF.
+            bytes.iter().map(|&b| b as char).collect()
+        }
+        "utf16" | "utf16be" | "utf16le" => decode_utf16(bytes, enc.ends_with("le")),
+        _ => String::from_utf8_lossy(bytes).into_owned(),
+    }
+}
+
+fn decode_utf16(bytes: &[u8], default_le: bool) -> String {
+    let (body, le) = match bytes {
+        [0xFE, 0xFF, rest @ ..] => (rest, false),
+        [0xFF, 0xFE, rest @ ..] => (rest, true),
+        _ => (bytes, default_le),
+    };
+    let units: Vec<u16> = body
+        .chunks_exact(2)
+        .map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) })
+        .collect();
+    char::decode_utf16(units)
+        .map(|r| r.unwrap_or('\u{FFFD}'))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_latin1_round_trip() {
+        // 0xE9 is é in Latin-1.
+        let s = decode_tag_bytes(&[b'c', b'a', b'f', 0xE9], "ISO-8859-1");
+        assert_eq!(s, "café");
+    }
+
+    #[test]
+    fn decode_utf16_be_with_bom() {
+        // UTF-16BE BOM + "hi"
+        let bytes = [0xFE, 0xFF, 0x00, b'h', 0x00, b'i'];
+        assert_eq!(decode_tag_bytes(&bytes, "UTF-16"), "hi");
+    }
+
+    #[test]
+    fn decode_utf16_le_with_bom() {
+        let bytes = [0xFF, 0xFE, b'h', 0x00, b'i', 0x00];
+        assert_eq!(decode_tag_bytes(&bytes, "UTF-16"), "hi");
+    }
 }

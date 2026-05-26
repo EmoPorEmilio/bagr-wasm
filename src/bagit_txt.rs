@@ -56,9 +56,9 @@ impl BagItDeclaration {
         if version != spec::BAGIT_VERSION {
             return Err(BagError::UnsupportedVersion(version));
         }
-        if !encoding.eq_ignore_ascii_case(spec::TAG_FILE_ENCODING) {
-            return Err(BagError::UnsupportedEncoding(encoding));
-        }
+        // 0.97 permits any tag-file encoding (RFC 8493 narrowed this to UTF-8
+        // for 1.0). The validator decodes tag files according to this field;
+        // see `decode_tag_bytes` in validate.rs.
         Ok(Self { version, encoding })
     }
 

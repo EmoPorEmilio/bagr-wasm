@@ -40,7 +40,7 @@ impl Manifest {
 
     pub fn parse(filename: &str, text: &str) -> BagResult<Self> {
         let (kind, algorithm) = classify_filename(filename)?;
-        let mut entries = Vec::new();
+        let mut entries: Vec<ManifestEntry> = Vec::new();
         for raw in text.lines() {
             let line = raw.trim_end_matches('\r');
             if line.trim().is_empty() {
@@ -61,8 +61,24 @@ impl Manifest {
             }
             let decoded = path::decode_from_manifest(stored_path);
             let normalized = path::normalize(&decoded)?;
+            let checksum_lc = checksum.to_ascii_lowercase();
+            // Duplicate path within one manifest: only legal if the checksum
+            // is identical (redundant but harmless). Different checksums for
+            // the same path are an unambiguous spec violation.
+            if let Some(prev) = entries.iter().find(|e| e.path == normalized) {
+                if prev.checksum != checksum_lc {
+                    return Err(BagError::MalformedManifest {
+                        file: filename.to_string(),
+                        line: format!(
+                            "path {normalized:?} listed twice with conflicting checksums ({} vs {checksum_lc})",
+                            prev.checksum
+                        ),
+                    });
+                }
+                continue;
+            }
             entries.push(ManifestEntry {
-                checksum: checksum.to_ascii_lowercase(),
+                checksum: checksum_lc,
                 path: normalized,
             });
         }
