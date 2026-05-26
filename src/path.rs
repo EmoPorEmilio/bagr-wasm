@@ -32,44 +32,46 @@ pub fn normalize(raw: &str) -> BagResult<String> {
 /// Manifests percent-encode CR and LF in stored paths because those bytes
 /// would otherwise break line parsing. bagit-python uses `%0D` and `%0A`.
 pub fn encode_for_manifest(path: &str) -> String {
+    // bagit-python only escapes CR and LF; literal `%` is left alone.
     let mut out = String::with_capacity(path.len());
     for b in path.bytes() {
         match b {
             b'\r' => out.push_str("%0D"),
             b'\n' => out.push_str("%0A"),
-            b'%' => out.push_str("%25"),
             _ => out.push(b as char),
         }
     }
     out
 }
 
-/// Inverse of [`encode_for_manifest`].
+/// Inverse of [`encode_for_manifest`]: undoes only `%0A`/`%0D` (case-insensitive),
+/// leaving any other `%xx` sequences untouched so we don't accidentally collide
+/// with literal `%` in paths produced by bagit-python.
 pub fn decode_from_manifest(stored: &str) -> String {
     let bytes = stored.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(hi), Some(lo)) = (hex_nibble(bytes[i + 1]), hex_nibble(bytes[i + 2])) {
-                out.push((hi << 4) | lo);
-                i += 3;
-                continue;
+            let (h, l) = (bytes[i + 1], bytes[i + 2]);
+            match (h, l) {
+                (b'0', b'A' | b'a') => {
+                    out.push(b'\n');
+                    i += 3;
+                    continue;
+                }
+                (b'0', b'D' | b'd') => {
+                    out.push(b'\r');
+                    i += 3;
+                    continue;
+                }
+                _ => {}
             }
         }
         out.push(bytes[i]);
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
-}
-
-fn hex_nibble(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -101,5 +103,15 @@ mod tests {
         assert!(!enc.contains('\n'));
         assert!(!enc.contains('\r'));
         assert_eq!(decode_from_manifest(&enc), weird);
+    }
+
+    #[test]
+    fn literal_percent_is_preserved() {
+        // bagit-python doesn't encode `%`, so we must round-trip a path
+        // containing a literal percent without mangling it.
+        let raw = "data/100%done.txt";
+        let enc = encode_for_manifest(raw);
+        assert_eq!(enc, raw);
+        assert_eq!(decode_from_manifest(&enc), raw);
     }
 }

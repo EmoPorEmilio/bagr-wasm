@@ -81,14 +81,23 @@ impl BagInfo {
     }
 
     pub fn serialize(&self) -> String {
+        // Match bagit-python: sort headers alphabetically, strip embedded
+        // CR/LF from values (they would break the line-based format), keep
+        // duplicate values in insertion order under their shared key.
+        let mut buckets: std::collections::BTreeMap<&str, Vec<&str>> =
+            std::collections::BTreeMap::new();
+        for (k, v) in &self.entries {
+            buckets.entry(k.as_str()).or_default().push(v.as_str());
+        }
         let mut out = String::new();
-        for (key, value) in &self.entries {
-            // bag-info.txt has no formal wrapping requirement in 0.97; emit
-            // as a single line and let consumers handle long values.
-            out.push_str(key);
-            out.push_str(": ");
-            out.push_str(value);
-            out.push('\n');
+        for (key, values) in buckets {
+            for v in values {
+                let cleaned: String = v.chars().filter(|&c| c != '\n' && c != '\r').collect();
+                out.push_str(key);
+                out.push_str(": ");
+                out.push_str(&cleaned);
+                out.push('\n');
+            }
         }
         out
     }

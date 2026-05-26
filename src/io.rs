@@ -31,6 +31,18 @@ pub trait BagSource {
 
     /// Open a streaming reader for the file at `path`.
     async fn open(&self, path: &str) -> BagResult<Box<dyn FileReader + '_>>;
+
+    /// File size in bytes, if the host can answer cheaply (e.g. browser
+    /// `File.size`). The default implementation streams the file and counts;
+    /// `fast` validation overrides this with `File.size` in the wasm bridge.
+    async fn size(&self, path: &str) -> BagResult<u64> {
+        let mut reader = self.open(path).await?;
+        let mut n: u64 = 0;
+        while let Some(chunk) = reader.next_chunk().await? {
+            n += chunk.len() as u64;
+        }
+        Ok(n)
+    }
 }
 
 /// The host-side view of a destination during bag creation.
@@ -88,6 +100,13 @@ impl BagSource for MemoryBag {
             .ok_or_else(|| crate::error::BagError::Io(format!("missing file: {path}")))?
             .clone();
         Ok(Box::new(MemoryReader { bytes, done: false }))
+    }
+
+    async fn size(&self, path: &str) -> BagResult<u64> {
+        self.files
+            .get(path)
+            .map(|b| b.len() as u64)
+            .ok_or_else(|| crate::error::BagError::Io(format!("missing file: {path}")))
     }
 }
 

@@ -25,6 +25,8 @@ async fn create_then_validate_md5_and_sha256() {
             algorithms: vec![Algorithm::Md5, Algorithm::Sha256],
             bag_info: info,
             include_tag_manifests: true,
+            bagging_date: Some("2026-05-26".into()),
+            software_agent: None,
         },
     )
     .await

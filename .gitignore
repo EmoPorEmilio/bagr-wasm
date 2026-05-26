@@ -1,5 +1,6 @@
 /target
 Cargo.lock.bak
 /pkg
+/pkg-node
 /node_modules
 .DS_Store

@@ -24,10 +24,15 @@ impl BagItDeclaration {
     }
 
     pub fn parse(text: &str) -> BagResult<Self> {
+        if text.as_bytes().starts_with("\u{feff}".as_bytes()) {
+            return Err(BagError::MalformedBagItTxt(
+                "bagit.txt must not contain a UTF-8 byte-order mark".into(),
+            ));
+        }
         let mut version = None;
         let mut encoding = None;
         for raw in text.lines() {
-            let line = strip_bom(raw).trim();
+            let line = raw.trim();
             if line.is_empty() {
                 continue;
             }
@@ -65,10 +70,6 @@ impl BagItDeclaration {
     }
 }
 
-fn strip_bom(s: &str) -> &str {
-    s.strip_prefix('\u{feff}').unwrap_or(s)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,8 +91,14 @@ mod tests {
     }
 
     #[test]
-    fn tolerates_bom_and_crlf() {
-        let text = "\u{feff}BagIt-Version: 0.97\r\nTag-File-Character-Encoding: UTF-8\r\n";
+    fn tolerates_crlf() {
+        let text = "BagIt-Version: 0.97\r\nTag-File-Character-Encoding: UTF-8\r\n";
         assert!(BagItDeclaration::parse(text).is_ok());
+    }
+
+    #[test]
+    fn rejects_bom() {
+        let text = "\u{feff}BagIt-Version: 0.97\nTag-File-Character-Encoding: UTF-8\n";
+        assert!(BagItDeclaration::parse(text).is_err());
     }
 }

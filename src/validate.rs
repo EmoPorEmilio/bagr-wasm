@@ -29,9 +29,28 @@ pub struct ValidationReport {
     pub held_files: usize,
 }
 
+/// Mode-flag for [`validate_with`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ValidateOptions {
+    /// When true, perform only the Payload-Oxum check (and require it to be
+    /// present) — matches bagit-python's `fast=True`. Skips completeness and
+    /// checksum verification.
+    pub fast: bool,
+    /// When true, perform completeness checks but skip checksum verification.
+    pub completeness_only: bool,
+}
+
 /// Validate the bag exposed by `source`. Returns Ok with a report on success,
 /// or the first violation encountered.
 pub async fn validate<S: BagSource + ?Sized>(source: &S) -> BagResult<ValidationReport> {
+    validate_with(source, ValidateOptions::default()).await
+}
+
+/// Like [`validate`] but with [`ValidateOptions`].
+pub async fn validate_with<S: BagSource + ?Sized>(
+    source: &S,
+    options: ValidateOptions,
+) -> BagResult<ValidationReport> {
     let listing: BTreeSet<String> = source.list().await?.into_iter().collect();
 
     // -- bagit.txt --
@@ -64,6 +83,45 @@ pub async fn validate<S: BagSource + ?Sized>(source: &S) -> BagResult<Validation
     };
     let held: BTreeSet<String> = fetch.entries.iter().map(|e| e.path.clone()).collect();
 
+    // Cache parsed bag-info.txt for Payload-Oxum lookup; both fast and full
+    // modes need it.
+    let bag_info = if listing.contains(spec::BAG_INFO_TXT) {
+        Some(BagInfo::parse(&read_to_string(source, spec::BAG_INFO_TXT).await?)?)
+    } else {
+        None
+    };
+
+    // -- fast mode: just check Payload-Oxum and return --
+    if options.fast {
+        let info = bag_info.as_ref().ok_or_else(|| {
+            BagError::Incomplete("fast validation requires bag-info.txt with Payload-Oxum".into())
+        })?;
+        let declared = info.payload_oxum().ok_or_else(|| {
+            BagError::Incomplete("fast validation requires bag-info.txt to include Payload-Oxum".into())
+        })?;
+        let mut total_octets: u64 = 0;
+        let mut total_files: u64 = 0;
+        for p in listing.iter().filter(|p| p.starts_with("data/")) {
+            total_octets += source.size(p).await?;
+            total_files += 1;
+        }
+        let actual = PayloadOxum { octets: total_octets, streams: total_files };
+        if declared != actual {
+            return Err(BagError::OxumMismatch {
+                expected: declared.render(),
+                actual: actual.render(),
+            });
+        }
+        return Ok(ValidationReport {
+            declaration: Some(declaration),
+            payload_manifests,
+            tag_manifests,
+            payload_files: total_files as usize,
+            payload_octets: total_octets,
+            held_files: held.len(),
+        });
+    }
+
     // -- parse all manifests --
     let mut parsed_payload: Vec<Manifest> = Vec::new();
     for name in &payload_manifests {
@@ -89,21 +147,20 @@ pub async fn validate<S: BagSource + ?Sized>(source: &S) -> BagResult<Validation
         }
     }
 
-    // -- every payload file is declared (in every payload manifest, per spec) --
+    // -- every payload file must appear in at least one payload manifest --
+    // bagit-python aggregates entries across all payload manifests, so a file
+    // listed in `manifest-sha256.txt` but missing from `manifest-md5.txt`
+    // does not fail completeness on its own.
     let payload_on_disk: BTreeSet<String> = listing
         .iter()
         .filter(|p| p.starts_with("data/"))
         .cloned()
         .collect();
-    for m in &parsed_payload {
-        let declared: BTreeSet<String> = m.entries.iter().map(|e| e.path.clone()).collect();
-        for p in &payload_on_disk {
-            if !declared.contains(p) {
-                return Err(BagError::Incomplete(format!(
-                    "{p} present in payload but missing from {}",
-                    m.filename()
-                )));
-            }
+    for p in &payload_on_disk {
+        if !payload_declared.contains(p) {
+            return Err(BagError::Incomplete(format!(
+                "{p} present in payload but missing from all payload manifests"
+            )));
         }
     }
 
@@ -118,6 +175,18 @@ pub async fn validate<S: BagSource + ?Sized>(source: &S) -> BagResult<Validation
                 )));
             }
         }
+    }
+
+    // -- completeness-only mode: skip the actual checksum verification --
+    if options.completeness_only {
+        return Ok(ValidationReport {
+            declaration: Some(declaration),
+            payload_manifests,
+            tag_manifests,
+            payload_files: payload_on_disk.len(),
+            payload_octets: 0,
+            held_files: held.len(),
+        });
     }
 
     // -- checksums: hash each unique file once for all algorithms it appears in --
@@ -185,8 +254,7 @@ pub async fn validate<S: BagSource + ?Sized>(source: &S) -> BagResult<Validation
     }
 
     // -- Payload-Oxum check, when present --
-    if listing.contains(spec::BAG_INFO_TXT) {
-        let info = BagInfo::parse(&read_to_string(source, spec::BAG_INFO_TXT).await?)?;
+    if let Some(info) = bag_info.as_ref() {
         if let Some(declared) = info.payload_oxum() {
             let actual = PayloadOxum {
                 octets: payload_octets,

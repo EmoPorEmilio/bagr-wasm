@@ -20,20 +20,36 @@ use crate::spec;
 pub struct CreateOptions {
     /// Algorithms to compute manifests for. At least one is required.
     pub algorithms: Vec<Algorithm>,
-    /// Initial `bag-info.txt` contents. `Payload-Oxum` is set automatically.
+    /// Initial `bag-info.txt` contents. `Payload-Oxum`, `Bagging-Date`, and
+    /// `Bag-Software-Agent` are filled in automatically if absent.
     pub bag_info: BagInfo,
     /// When true, also emit `tagmanifest-*.txt` for each algorithm.
     pub include_tag_manifests: bool,
+    /// Override `Bagging-Date` (otherwise the caller-supplied value in
+    /// `bag_info` wins, then nothing — wasm callers should pass today's date
+    /// from JS since wasm32 has no clock).
+    pub bagging_date: Option<String>,
+    /// Override `Bag-Software-Agent` (otherwise the caller-supplied value in
+    /// `bag_info` wins, then `DEFAULT_SOFTWARE_AGENT`).
+    pub software_agent: Option<String>,
 }
 
 impl Default for CreateOptions {
     fn default() -> Self {
         Self {
-            algorithms: vec![Algorithm::Sha256],
+            // bagit-python's DEFAULT_CHECKSUMS.
+            algorithms: vec![Algorithm::Sha256, Algorithm::Sha512],
             bag_info: BagInfo::new(),
             include_tag_manifests: true,
+            bagging_date: None,
+            software_agent: None,
         }
     }
+}
+
+impl CreateOptions {
+    pub const DEFAULT_SOFTWARE_AGENT: &'static str =
+        "bagr-wasm <https://github.com/emoporemilio/bagr-wasm>";
 }
 
 /// Assemble a bag in `sink` from payload files in `source`.
@@ -89,8 +105,20 @@ pub async fn create<S: BagSource + ?Sized, D: BagSink + ?Sized>(
     let declaration = BagItDeclaration::default_v097();
     write_text(sink, spec::BAGIT_TXT, &declaration.serialize()).await?;
 
-    // bag-info.txt with Payload-Oxum filled in
+    // bag-info.txt with defaults filled in to match bagit-python's make_bag.
     let mut info = options.bag_info.clone();
+    if info.get(spec::BAGGING_DATE_KEY).is_none() {
+        if let Some(date) = options.bagging_date.as_deref() {
+            info.set(spec::BAGGING_DATE_KEY, date);
+        }
+    }
+    if info.get("Bag-Software-Agent").is_none() {
+        let agent = options
+            .software_agent
+            .as_deref()
+            .unwrap_or(CreateOptions::DEFAULT_SOFTWARE_AGENT);
+        info.set("Bag-Software-Agent", agent);
+    }
     info.set(
         spec::PAYLOAD_OXUM_KEY,
         PayloadOxum {

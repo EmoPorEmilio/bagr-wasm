@@ -70,10 +70,12 @@ impl Manifest {
     }
 
     pub fn serialize(&self) -> String {
+        // bagit-python uses two spaces between digest and path; we match for
+        // byte-for-byte parity with tools that grep for that separator.
         let mut out = String::new();
         for entry in &self.entries {
             out.push_str(&entry.checksum);
-            out.push(' ');
+            out.push_str("  ");
             out.push_str(&path::encode_for_manifest(&entry.path));
             out.push('\n');
         }
