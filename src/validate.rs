@@ -75,13 +75,33 @@ pub async fn validate_with<S: BagSource + ?Sized>(
         ));
     }
 
+    // -- bagit-python's _validate_structure_payload_directory: data/ must exist --
+    // We have no notion of empty directories, so we treat "data/ exists" as
+    // "at least one file under data/ is on disk or declared in a manifest or fetched".
+    let has_data = listing.iter().any(|p| p.starts_with("data/"));
+
     // -- fetch.txt (optional) --
     let fetch = if listing.contains(spec::FETCH_TXT) {
-        Fetch::parse(&read_to_string(source, spec::FETCH_TXT).await?)?
+        let f = Fetch::parse(&read_to_string(source, spec::FETCH_TXT).await?)?;
+        for entry in &f.entries {
+            crate::fetch::validate_url(&entry.url)?;
+            if !entry.path.starts_with("data/") {
+                return Err(BagError::MalformedFetch(format!(
+                    "fetch.txt path must live under data/: {:?}",
+                    entry.path
+                )));
+            }
+        }
+        f
     } else {
         Fetch::default()
     };
     let held: BTreeSet<String> = fetch.entries.iter().map(|e| e.path.clone()).collect();
+    let url_for: std::collections::BTreeMap<&str, &str> = fetch
+        .entries
+        .iter()
+        .map(|e| (e.path.as_str(), e.url.as_str()))
+        .collect();
 
     // Cache parsed bag-info.txt for Payload-Oxum lookup; both fast and full
     // modes need it.
@@ -134,7 +154,11 @@ pub async fn validate_with<S: BagSource + ?Sized>(
         parsed_tag.push(Manifest::parse(name, &text)?);
     }
 
-    // -- completeness: every declared path is either present or held --
+    // -- completeness: every declared path must be present locally --
+    // bagit-python does NOT exempt held files: they are still required to be
+    // on disk at validation time. We only "skip" them if the host supplies a
+    // working fetch_url() in the bridge — that branch is handled below in
+    // the checksum step, where a held file's bytes are pulled from the URL.
     let payload_declared: BTreeSet<String> = parsed_payload
         .iter()
         .flat_map(|m| m.entries.iter().map(|e| e.path.clone()))
@@ -142,9 +166,17 @@ pub async fn validate_with<S: BagSource + ?Sized>(
     for path in &payload_declared {
         if !listing.contains(path) && !held.contains(path) {
             return Err(BagError::Incomplete(format!(
-                "{path} declared in payload manifest but not present and not held in fetch.txt"
+                "{path} declared in payload manifest but not present on disk"
             )));
         }
+    }
+
+    // After completeness, we know any held file is at least listed in fetch.txt;
+    // whether it's actually retrievable is decided when we go to hash it.
+    if !has_data && payload_declared.is_empty() && held.is_empty() {
+        return Err(BagError::Incomplete(
+            "no payload: data/ directory is empty and no fetch entries declared".into(),
+        ));
     }
 
     // -- every payload file must appear in at least one payload manifest --
@@ -193,9 +225,6 @@ pub async fn validate_with<S: BagSource + ?Sized>(
     let mut needed: BTreeMap<String, Vec<&Manifest>> = BTreeMap::new();
     for m in parsed_payload.iter().chain(parsed_tag.iter()) {
         for entry in &m.entries {
-            if held.contains(&entry.path) && !listing.contains(&entry.path) {
-                continue; // a held payload file we don't have locally yet
-            }
             needed.entry(entry.path.clone()).or_default().push(m);
         }
     }
@@ -212,7 +241,25 @@ pub async fn validate_with<S: BagSource + ?Sized>(
         hashers.sort_by_key(|(a, _)| *a as usize);
         hashers.dedup_by_key(|(a, _)| *a);
 
-        let mut reader = source.open(path).await?;
+        // Held files that aren't on disk: ask the host to fetch them. If the
+        // host doesn't implement fetch_url(), this is a hard error — matching
+        // bagit-python except we surface a clearer message.
+        let mut reader = if listing.contains(path) {
+            source.open(path).await?
+        } else if let Some(url) = url_for.get(path.as_str()) {
+            match source.fetch_url(url).await? {
+                Some(r) => r,
+                None => {
+                    return Err(BagError::Incomplete(format!(
+                        "{path} is held in fetch.txt ({url}) but no fetch handler is configured"
+                    )))
+                }
+            }
+        } else {
+            return Err(BagError::Incomplete(format!(
+                "{path} missing and not held in fetch.txt"
+            )));
+        };
         let mut bytes_seen: u64 = 0;
         while let Some(chunk) = reader.next_chunk().await? {
             bytes_seen += chunk.len() as u64;

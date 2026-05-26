@@ -141,4 +141,71 @@ try {
 console.log("Oxum error:", oxumErr);
 assert(oxumErr && /oxum/i.test(oxumErr), "fast mode catches size mismatch");
 
+// ---- 6) fetch.txt with host-provided fetch() materializes held files ----
+
+{
+  // Take the previously built bag, move data/hello.txt out, declare it in
+  // fetch.txt, and validate through a source whose fetch() returns the bytes.
+  const heldBytes = sink.files.get("data/hello.txt");
+  const heldBag = new Map(sink.files);
+  heldBag.delete("data/hello.txt");
+  heldBag.set(
+    "fetch.txt",
+    enc.encode(`http://example.org/hello ${heldBytes.length} data/hello.txt\n`),
+  );
+
+  const baseSource = makeSource(heldBag);
+  const sourceWithFetch = {
+    ...baseSource,
+    async fetch(url) {
+      assert(url === "http://example.org/hello", "fetch hook receives the URL");
+      let done = false;
+      return { async next() {
+        if (done) return { done: true };
+        done = true;
+        return { value: heldBytes, done: false };
+      }};
+    },
+  };
+
+  const heldReport = await validator.validate(sourceWithFetch, {});
+  console.log("\nHeld-file validation report:", heldReport);
+  assert(heldReport.held_files === 1, "report counts the held file");
+}
+
+// ---- 7) Without fetch() the validator surfaces a clear missing-fetch error ----
+
+{
+  const heldBytes = sink.files.get("data/hello.txt");
+  const heldBag = new Map(sink.files);
+  heldBag.delete("data/hello.txt");
+  heldBag.set(
+    "fetch.txt",
+    enc.encode(`http://example.org/hello ${heldBytes.length} data/hello.txt\n`),
+  );
+  let err = null;
+  try {
+    await validator.validate(makeSource(heldBag), {});
+  } catch (e) {
+    err = String(e);
+  }
+  console.log("No-fetch-handler error:", err);
+  assert(err && /fetch/i.test(err), "missing fetch handler is surfaced");
+}
+
+// ---- 8) Malformed fetch.txt URL is rejected ----
+
+{
+  const badBag = new Map(sink.files);
+  badBag.set("fetch.txt", enc.encode("not-a-url 8 data/extra.txt\n"));
+  let err = null;
+  try {
+    await validator.validate(makeSource(badBag), {});
+  } catch (e) {
+    err = String(e);
+  }
+  console.log("Bad-URL error:", err);
+  assert(err && /malformed/i.test(err) && /fetch/i.test(err), "malformed URL rejected");
+}
+
 console.log("\nAll smoke checks passed.");

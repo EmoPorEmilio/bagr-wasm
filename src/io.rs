@@ -43,6 +43,15 @@ pub trait BagSource {
         }
         Ok(n)
     }
+
+    /// Optional: fetch a URL listed in `fetch.txt`. When implemented (e.g.
+    /// the host wraps `window.fetch` in the wasm bridge), the validator can
+    /// materialize held files itself rather than requiring the caller to put
+    /// them on disk first. The default returns `None`, matching bagit-python's
+    /// behavior of *not* downloading.
+    async fn fetch_url(&self, _url: &str) -> BagResult<Option<Box<dyn FileReader + '_>>> {
+        Ok(None)
+    }
 }
 
 /// The host-side view of a destination during bag creation.

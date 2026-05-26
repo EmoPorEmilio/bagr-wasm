@@ -18,6 +18,35 @@ pub struct Fetch {
     pub entries: Vec<FetchEntry>,
 }
 
+/// Validate a URL the way bagit-python's `validate_fetch` does: parsing must
+/// yield both a scheme and a netloc, *unless* the scheme is `file` (in which
+/// case netloc is optional).
+pub fn validate_url(url: &str) -> BagResult<()> {
+    let (scheme, rest) = url
+        .split_once(':')
+        .ok_or_else(|| BagError::MalformedFetch(format!("missing URL scheme: {url:?}")))?;
+    if scheme.is_empty() || !scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) {
+        return Err(BagError::MalformedFetch(format!(
+            "invalid URL scheme: {url:?}"
+        )));
+    }
+    if scheme.eq_ignore_ascii_case("file") {
+        return Ok(());
+    }
+    // For non-`file` schemes, require `//<netloc>` after the scheme.
+    let after_slashes = rest
+        .strip_prefix("//")
+        .ok_or_else(|| BagError::MalformedFetch(format!("missing netloc: {url:?}")))?;
+    let netloc_end = after_slashes
+        .find(|c: char| matches!(c, '/' | '?' | '#'))
+        .unwrap_or(after_slashes.len());
+    let netloc = &after_slashes[..netloc_end];
+    if netloc.is_empty() {
+        return Err(BagError::MalformedFetch(format!("empty netloc: {url:?}")));
+    }
+    Ok(())
+}
+
 impl Fetch {
     pub fn parse(text: &str) -> BagResult<Self> {
         let mut entries = Vec::new();
@@ -101,5 +130,16 @@ mod tests {
         let original = "https://example.org/x 42 data/x\n";
         let parsed = Fetch::parse(original).unwrap();
         assert_eq!(parsed.serialize(), original);
+    }
+
+    #[test]
+    fn url_validation() {
+        assert!(validate_url("https://example.org/x").is_ok());
+        assert!(validate_url("http://example.org").is_ok());
+        assert!(validate_url("file:///tmp/x").is_ok());
+        assert!(validate_url("file:x").is_ok());
+        assert!(validate_url("not-a-url").is_err());
+        assert!(validate_url("https:///path").is_err()); // empty netloc
+        assert!(validate_url("://example").is_err()); // empty scheme
     }
 }

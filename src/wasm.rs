@@ -178,6 +178,23 @@ impl BagSource for JsBagSource {
         }
         Ok(n)
     }
+
+    async fn fetch_url(&self, url: &str) -> BagResult<Option<Box<dyn FileReader + '_>>> {
+        let Some(f) = opt_method(&self.obj, "fetch") else {
+            return Ok(None);
+        };
+        let raw = f
+            .call1(&self.obj, &JsValue::from_str(url))
+            .map_err(js_err)?;
+        let reader = await_promise_like(raw).await?;
+        if !reader.is_object() {
+            return Err(BagError::Io(format!(
+                "fetch({url:?}) did not return an object with next()"
+            )));
+        }
+        let next = get_method(&reader, "next")?;
+        Ok(Some(Box::new(JsFileReader { reader, next })))
+    }
 }
 
 // ---------- JS-backed BagSink ----------
