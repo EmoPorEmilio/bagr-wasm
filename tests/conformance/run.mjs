@@ -5,10 +5,14 @@
 
 import { promises as fs, createReadStream } from "node:fs";
 import { join, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { dirname as pathDirname, join as pathJoin } from "node:path";
 import { Validator } from "../../pkg-node/bagr_wasm.js";
 
+const __dirname = pathDirname(fileURLToPath(import.meta.url));
 const root =
-  process.env.CONFORMANCE_DIR || "/tmp/bagit-conformance-suite/v0.97";
+  process.env.CONFORMANCE_DIR ||
+  pathJoin(__dirname, "..", "fixtures", "conformance", "v0.97");
 
 async function walk(dir) {
   const out = [];

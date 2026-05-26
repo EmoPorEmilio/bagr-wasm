@@ -23,25 +23,32 @@ Produces:
 
 ## Testing
 
-`bash scripts/test.sh` runs all four suites:
+```sh
+bash scripts/test.sh
+```
+
+Runs four suites in sequence:
 
 1. **`cargo test`** — 34 native unit + integration tests.
 2. **`tests/node-smoke/run.mjs`** — 17 checks driving the wasm bridge from
-   real JS: create, validate, corruption detection, fast mode, fetch hook,
-   error surfaces.
+   real JS in Node: create, validate, corruption detection, fast mode,
+   fetch hook, error surfaces.
 3. **`tests/conformance/run.mjs`** — runs the Library of Congress
-   [bagit-conformance-suite](https://github.com/LibraryOfCongress/bagit-conformance-suite)
-   v0.97 fixtures (12 valid bags + 11 invalid bags) through the validator.
-   All 23 classifications match the expected outcome.
-4. **`tests/cross-validate/run.mjs`** — round-trips bags between bagr-wasm
-   and `bagit-python` itself. Builds with bagr-wasm in 5 algorithm combos
-   and verifies bagit-python accepts each; builds with bagit-python in 6
-   algorithm combos and verifies bagr-wasm accepts each; corrupts one bag
-   and asserts both implementations reject it.
+   `bagit-conformance-suite` v0.97 fixtures through the validator. The
+   fixtures are vendored at `tests/fixtures/conformance/v0.97/` (CC0,
+   public domain — see `LICENSE.md` there). 12 valid bags must pass, 11
+   invalid bags must fail.
+4. **`tests/cross-validate/run.mjs`** — *optional*. If the `bagit` CLI is on
+   `PATH` (`pip install bagit`), round-trips bags between bagr-wasm and
+   bagit-python: builds with bagr-wasm in 5 algorithm combos and asks
+   bagit-python to validate, builds with bagit-python in 6 algorithm combos
+   and asks bagr-wasm to validate, and corrupts one bag to check both
+   implementations reject it. The script skips this suite when `bagit`
+   isn't installed.
 
-The test script auto-skips suites 3 and 4 if `bagit-conformance-suite` isn't
-checked out at `/tmp/bagit-conformance-suite` or `bagit-python` isn't on
-`PATH` (`pip install bagit`).
+Prerequisites for the full run: a Rust toolchain with the
+`wasm32-unknown-unknown` target installed, `wasm-bindgen-cli` (matching
+crate version), Node 18+, and optionally Python with `bagit` for suite 4.
 
 ## Using from JavaScript
 
